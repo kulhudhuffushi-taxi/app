@@ -3,7 +3,7 @@
 # Main plan
 Build phases
 
-Phase 1: Database and skeleton✅
+✅Phase 1: Database and skeleton
 Create the requests table (id, name, phone, pickup, destination, status, created_at) and a basic page that connects to it.
 
 Phase 2: Customer page

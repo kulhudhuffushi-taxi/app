@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b6e4f">
+<title>Kulhudhuffushi Taxi</title>
+<style>
+  :root {
+    --bg: #f5f7f6; --card: #ffffff; --text: #14211c; --muted: #5b6b64;
+    --brand: #0b6e4f; --brand-text: #ffffff; --border: #cfd8d4; --error: #b00020; --ok-bg: #e6f4ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0e1512; --card: #17211d; --text: #e8f0ec; --muted: #9db0a8;
+            --brand: #2fb585; --brand-text: #06130e; --border: #2c3b35; --error: #ff6b81; --ok-bg: #12301f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.45; }
+  main { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 1.5rem; margin: 8px 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
+  label { display: block; font-weight: 600; margin: 14px 0 6px; }
+  input, select { width: 100%; padding: 14px; font-size: 1rem; border: 1px solid var(--border);
+                  border-radius: 10px; background: var(--bg); color: var(--text); }
+  input:focus, select:focus, button:focus-visible { outline: 3px solid var(--brand); outline-offset: 1px; }
+  .fare { margin: 16px 0 4px; padding: 12px; border-radius: 10px; background: var(--ok-bg); font-size: 0.95rem; }
+  .fare strong { font-size: 1.15rem; }
+  button.primary { width: 100%; margin-top: 16px; padding: 16px; font-size: 1.05rem; font-weight: 700;
+                   border: 0; border-radius: 12px; background: var(--brand); color: var(--brand-text); cursor: pointer; }
+  button.primary:disabled { opacity: 0.6; cursor: wait; }
+  button.secondary { padding: 10px 14px; font-size: 0.95rem; border: 1px solid var(--border);
+                     border-radius: 10px; background: transparent; color: var(--text); cursor: pointer; margin-top: 8px; }
+  .error { color: var(--error); font-weight: 600; margin: 12px 0 0; min-height: 1.2em; }
+  .token { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.8rem; word-break: break-all;
+           background: var(--bg); border: 1px dashed var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; }
+  .hidden { display: none; }
+  .loading { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Kulhudhuffushi Taxi</h1>
+  <p class="sub">Request a taxi. No call needed.</p>
+
+  <div id="loading" class="card loading">Loading...</div>
+  <div id="loadError" class="card hidden"></div>
+
+  <form id="form" class="card hidden" novalidate>
+    <label for="name">Your name</label>
+    <input id="name" type="text" autocomplete="name" maxlength="80" required>
+
+    <label for="phone">Phone number</label>
+    <input id="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="15" placeholder="e.g. 7771234" required>
+
+    <label for="pickup">Pickup</label>
+    <select id="pickup" required></select>
+
+    <label for="destination">Destination</label>
+    <select id="destination" required></select>
+
+    <div class="fare">
+      Fixed fare: <strong id="fareText">-</strong><br>
+      Pay the driver in cash. Luggage is not supported.
+    </div>
+
+    <p id="formError" class="error" role="alert" aria-live="polite"></p>
+    <button id="submitBtn" class="primary" type="submit">Request taxi</button>
+  </form>
+
+  <section id="confirmation" class="card hidden" aria-live="polite">
+    <h2 style="margin-top:0">Request sent</h2>
+    <p id="routeSummary"></p>
+    <p>Fare: <strong id="confirmFare"></strong> (cash)</p>
+    <p>A driver will take your request. Keep this code. You will use it to check your request status.</p>
+    <div id="tokenBox" class="token"></div>
+    <button id="copyBtn" class="secondary" type="button">Copy code</button>
+    <button id="newBtn" class="secondary" type="button">Make another request</button>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script>
+(function () {
+  var cfg = window.TAXI_CONFIG;
+  var db = supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_KEY, { auth: { persistSession: false } });
+  var $ = function (id) { return document.getElementById(id); };
+  var fare = null;
+  var PHONE_RE = /^[0-9+ ]{7,15}$/;   // keep in sync with the database rule
+
+  function fillSelect(sel, names, placeholder) {
+    sel.textContent = "";
+    var first = document.createElement("option");
+    first.value = ""; first.textContent = placeholder;
+    sel.appendChild(first);
+    names.forEach(function (n) {
+      var o = document.createElement("option");
+      o.value = n; o.textContent = n;
+      sel.appendChild(o);
+    });
+  }
+
+  async function init() {
+    var locs = await db.from("locations").select("name_en").order("name_en");
+    var fares = await db.from("fare_settings").select("standard_fare_mvr").eq("id", 1).maybeSingle();
+    $("loading").classList.add("hidden");
+    if (locs.error || fares.error || !locs.data || !locs.data.length || !fares.data) {
+      var box = $("loadError");
+      box.textContent = "Sorry, the booking service is not available right now. Please try again later.";
+      box.classList.remove("hidden");
+      if (window.console) console.error(locs.error || fares.error || "no data");
+      return;
+    }
+    var names = locs.data.map(function (r) { return r.name_en; });
+    fare = fares.data.standard_fare_mvr;
+    fillSelect($("pickup"), names, "Choose pickup");
+    fillSelect($("destination"), names, "Choose destination");
+    $("fareText").textContent = "MVR " + fare;
+    $("form").classList.remove("hidden");
+  }
+
+  function validate() {
+    var name = $("name").value.trim();
+    var phone = $("phone").value.trim();
+    var pickup = $("pickup").value;
+    var dest = $("destination").value;
+    if (!name) return "Please enter your name.";
+    if (name.length > 80) return "Name is too long.";
+    if (!PHONE_RE.test(phone)) return "Please enter a valid phone number (digits only, 7 to 15 characters).";
+    if (!pickup) return "Please choose a pickup place.";
+    if (!dest) return "Please choose a destination.";
+    if (pickup === dest) return "Pickup and destination must be different.";
+    return "";
+  }
+
+  $("form").addEventListener("submit", async function (e) {
+    e.preventDefault();
+    $("formError").textContent = "";
+    var problem = validate();
+    if (problem) { $("formError").textContent = problem; return; }
+
+    var btn = $("submitBtn");
+    btn.disabled = true; btn.textContent = "Sending...";
+    var pickup = $("pickup").value, dest = $("destination").value;
+    var res = await db.rpc("create_request", {
+      p_name: $("name").value.trim(),
+      p_phone: $("phone").value.trim(),
+      p_pickup: pickup,
+      p_destination: dest
+    });
+    btn.disabled = false; btn.textContent = "Request taxi";
+
+    if (res.error || !res.data) {
+      if (window.console) console.error(res.error);
+      $("formError").textContent = "Sorry, we could not send your request. Please check your details and try again.";
+      return;
+    }
+    var token = res.data;
+    try { localStorage.setItem("taxi_last_token", token); } catch (err) { /* storage may be blocked; fine */ }
+
+    $("routeSummary").textContent = pickup + " to " + dest;
+    $("confirmFare").textContent = "MVR " + fare;
+    $("tokenBox").textContent = token;
+    $("form").classList.add("hidden");
+    $("confirmation").classList.remove("hidden");
+    $("confirmation").scrollIntoView({ behavior: "smooth" });
+  });
+
+  $("copyBtn").addEventListener("click", async function () {
+    try { await navigator.clipboard.writeText($("tokenBox").textContent); $("copyBtn").textContent = "Copied"; }
+    catch (err) { $("copyBtn").textContent = "Select the code and copy it"; }
+  });
+
+  $("newBtn").addEventListener("click", function () {
+    $("confirmation").classList.add("hidden");
+    $("copyBtn").textContent = "Copy code";
+    $("form").reset();
+    $("form").classList.remove("hidden");
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>
